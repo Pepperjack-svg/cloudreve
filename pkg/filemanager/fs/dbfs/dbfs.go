@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path"
 	"path/filepath"
 	"sync"
@@ -238,6 +239,24 @@ func (f *DBFS) Capacity(ctx context.Context, u *ent.User) (*fs.Capacity, error) 
 
 	res.Used = f.user.Storage
 	res.Total = requesterGroup.MaxStorage
+	if policy, err := f.storagePolicyClient.GetByGroup(ctx, requesterGroup); err == nil && policy.Type == types.PolicyTypeLocal {
+		// Calculate physical path for the local storage policy
+		root := util.ReplaceMagicVar(policy.DirNameRule, string(os.PathSeparator), true, false, time.Now(), u.ID, "", "", "")
+		root = filepath.Clean(root)
+		if !filepath.IsAbs(root) {
+			root = util.DataPath(root)
+		}
+		if totalBytes, _, err := util.DiskUsage(root); err == nil {
+			// Respect the smaller value between disk capacity and group quota
+			if res.Total == 0 || int64(totalBytes) < res.Total {
+				res.Total = int64(totalBytes)
+			}
+		} else {
+			f.l.Warning("capacity: failed to stat %s: %v", root, err)
+		}
+	} else if err != nil {
+		f.l.Warning("capacity: failed to load storage policy: %v", err)
+	}
 	return res, nil
 }
 
